@@ -15,6 +15,7 @@ def prepare_data(
     example,
     tokenizer,
 ):
+    example['prompt'] = tokenizer.apply_chat_template([{'role': 'user', 'content': example['prompt']}], tokenize=False, add_generation_prompt=True)
     return tokenizer([example['prompt']], padding=False, truncation=False)
 
 
@@ -31,19 +32,34 @@ def generate(model, inputs, max_new_tokens, pad_token_id, assistant_model=None):
     end_time = time.time()
     return outputs, end_time - start_time
 
+
 def main():
     logger.setLevel(logging.INFO)
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="meng-lab/Llama-3.1-8B-Instruct-gsm8k")
     parser.add_argument("--split", type=str, default="test")
+    parser.add_argument("--resume", type=int, default=0)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     args = parser.parse_args()
 
-    checkpoint = "/p/llmresearch/huggingface/thh9bk/hub/Meta-Llama-3.1-70B-Instruct"
-    assistant_checkpoint = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    # checkpoint = "/p/llmresearch/huggingface/thh9bk/hub/Meta-Llama-3.1-70B-Instruct"
+    # assistant_checkpoint = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+
+    checkpoint = "meta-llama/CodeLlama-34b-Instruct-hf"
+    assistant_checkpoint = "meta-llama/CodeLlama-13b-Instruct-hf"
 
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
     raw_dataset = load_dataset(args.dataset, split=args.split)
+    # raw_dataset = raw_dataset.select(range(743, len(raw_dataset))) # 743 has an extremely long prompt, skip it
+    raw_dataset = raw_dataset.select(range(args.resume, len(raw_dataset)))
+    # for i in range(len(raw_dataset)):
+    #     if len(tokenizer.tokenize(raw_dataset[i]['prompt'])) > 3850:
+    #         print(i)
+    # print(raw_dataset[0]['prompt'])
+    # print(len(raw_dataset[0]['prompt']))
+    # print(len(tokenizer.tokenize(raw_dataset[0]['prompt'])))
+    # raise ValueError()
+
 
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint,
@@ -62,8 +78,9 @@ def main():
         batched=False,
         fn_kwargs={"tokenizer": tokenizer},
         remove_columns=["messages"],
-        num_proc=6,
+        num_proc=12,
     )
+    # print(dataset[0]['prompt'])
     dataset.set_format(device=device, type='torch', columns=['input_ids', 'attention_mask'])
 
     # Log a few random samples from the dataset:
@@ -71,7 +88,12 @@ def main():
     #     print(f"Example {index} of the dataset:\n\n{dataset[index]}")
 
 
-    wandb.init(project="speculative-decoding", name="generation-speed-test")
+    wandb.init(project="speculative-decoding", name="generation-speed-test" + "-" + checkpoint.split("/")[-1].split("-")[0] + "-" + args.dataset.split("-")[-1])
+    wandb.config.update(args)
+    wandb.config.update({
+        "model_checkpoint": checkpoint,
+        "assistant_checkpoint": assistant_checkpoint,
+    })
     total_time = 0
     total_time_no_assistant = 0
     total_generated_tokens = 0
@@ -79,7 +101,21 @@ def main():
     for inputs in tqdm(dataset):
         num_input_tokens = inputs["input_ids"].shape[1]
         # --- With assistant ---
-        outputs, cost_time = generate(model, inputs, args.max_new_tokens, tokenizer.eos_token_id, assistant_model=assistant_model)
+        # print("---input---\n", tokenizer.batch_decode(inputs["input_ids"], skip_special_tokens=True))
+        max_new_tokens = max(min(args.max_new_tokens, 4096 - num_input_tokens), 0)
+        if max_new_tokens == 0:
+            continue
+        outputs, cost_time = generate(model, inputs, max_new_tokens, tokenizer.eos_token_id, assistant_model=assistant_model)
+        # print("assistant model generation_config\n",
+        #     model.generation_config.num_assistant_tokens,
+        #     model.generation_config.num_assistant_tokens_schedule,
+        #     model.generation_config.assistant_confidence_threshold,
+        #     assistant_model.generation_config.num_assistant_tokens,
+        #     assistant_model.generation_config.num_assistant_tokens_schedule,
+        #     assistant_model.generation_config.assistant_confidence_threshold
+        # )
+        # raise ValueError()
+        # print("---with assistant model---\n", tokenizer.batch_decode(outputs, skip_special_tokens=True))
         total_time += cost_time
         # print("tokens with assistant model\n", tokenizer.batch_decode(outputs, skip_special_tokens=True))
         num_output_tokens = outputs.shape[1]
@@ -88,7 +124,8 @@ def main():
         print("Average time per token with assistant model:", total_time / total_generated_tokens * 1000, "ms")
 
         # --- Without assistant ---
-        outputs, cost_time = generate(model, inputs, args.max_new_tokens, tokenizer.eos_token_id)
+        outputs, cost_time = generate(model, inputs, max_new_tokens, tokenizer.eos_token_id)
+        # print("---no assistant model---\n", tokenizer.batch_decode(outputs, skip_special_tokens=True))
         total_time_no_assistant += cost_time
         # print("tokens without assistant model\n", tokenizer.batch_decode(outputs, skip_special_tokens=True))
         num_output_tokens = outputs.shape[1]
@@ -108,7 +145,7 @@ def main():
     print("Total time and tokens with assistant model:", total_time, total_generated_tokens)
     print("Total time and tokens without assistant model:", total_time_no_assistant, total_generated_tokens_no_assistant)
     wandb.finish()
-    # print(tokenizer.batch_decode(outputs, skip_special_tokens=True))
+
 
 if __name__ == "__main__":
     main()
