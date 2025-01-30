@@ -139,7 +139,7 @@ def main():
         }
 
         # Write each dictionary as a separate line in the JSONL file
-        with open(str(args.num_assistant_tokens) + "-" + str(args.assistant_confidence_threshold) + "-speculative_generated_text.jsonl", "a") as file:
+        with open(args.dataset.split("-")[-1] + args.checkpoint.split("/")[-1] + "-" + args.assistant_checkpoint.split("/")[-1] + "-" + str(args.num_assistant_tokens) + "-" + str(args.assistant_confidence_threshold) + "-speculative_generated_text.jsonl", "a") as file:
             file.write(json.dumps(output_dict) + "\n")
         num_output_tokens = outputs.shape[1]
         # print("generated tokens:", num_output_tokens - num_input_tokens)
@@ -149,9 +149,15 @@ def main():
 
         # --- Without assistant ---
         outputs, cost_time = generate(model, inputs, max_new_tokens, tokenizer.eos_token_id)
-        # generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        output_dict = {
+            "index": index,
+            "generated_text": generated_text
+        }
         # with open("greedy_generated_text.txt", "a") as file:
         #     file.write(generated_text)
+        with open(args.dataset.split("-")[-1] + args.checkpoint.split("/")[-1] + "-" + str(args.num_assistant_tokens) + "-" + str(args.assistant_confidence_threshold) + "-greedy_generated_text.jsonl", "a") as file:
+            file.write(json.dumps(output_dict) + "\n")
         # print("---no assistant model---\n", tokenizer.batch_decode(outputs, skip_special_tokens=True))
         total_time_no_assistant += cost_time
         # print("tokens without assistant model\n", tokenizer.batch_decode(outputs, skip_special_tokens=True))
